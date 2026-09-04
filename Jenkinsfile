@@ -1,7 +1,10 @@
 pipeline {
 
     agent any
-
+      tools {
+        jdk 'Java-21'
+        maven 'Maven-3.8.4'
+    } 
     environment {
 
         DOCKER_IMAGE = "sai090793/myapp"
@@ -12,6 +15,19 @@ pipeline {
     }
 
     stages {
+
+        stage('Check Tools') {
+    steps {
+        sh '''
+            echo "JAVA_HOME=$JAVA_HOME"
+            echo "MAVEN_HOME=$MAVEN_HOME"
+            which java
+            java -version
+            which mvn
+            mvn -version
+        '''
+    }
+}
 
         stage('Checkout') {
             steps {

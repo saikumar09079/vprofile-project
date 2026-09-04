@@ -256,7 +256,16 @@
 
     <build>
         <plugins>
-            <!-- Jetty Plugin -->
+		<!-- Jetty Plugin -->
+                   <plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <version>3.13.0</version>
+    <configuration>
+        <release>21</release>
+    </configuration>
+</plugin>
+
             <plugin>
                 <groupId>org.eclipse.jetty</groupId>
                 <artifactId>jetty-maven-plugin</artifactId>

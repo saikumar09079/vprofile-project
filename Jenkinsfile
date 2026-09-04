@@ -1,122 +1,126 @@
 pipeline {
-    
-	agent any
-	
-	tools {
-	jdk "JDK17"	
-        maven "MAVEN3.9"
-    }
-	
+
+    agent any
+
     environment {
-        NEXUS_VERSION = "nexus3"
-        NEXUS_PROTOCOL = "http"
-        NEXUS_URL = "172.31.40.209:8081"
-        NEXUS_REPOSITORY = "vprofile-release"
-	NEXUS_REPO_ID    = "vprofile-release"
-        NEXUS_CREDENTIAL_ID = "nexuslogin"
-        ARTVERSION = "${env.BUILD_ID}"
+
+        DOCKER_IMAGE = "sai090793/myapp"
+        DOCKER_TAG   = "${BUILD_NUMBER}"
+
+        DOCKER_CREDS = credentials('dockerhub-credentials')
+
     }
-	
-    stages{
-        
-        stage('BUILD'){
+
+    stages {
+
+        stage('Checkout') {
             steps {
-                sh 'mvn clean install -DskipTests'
-            }
-            post {
-                success {
-                    echo 'Now Archiving...'
-                    archiveArtifacts artifacts: '**/target/*.war'
-                }
+                checkout scm
             }
         }
 
-	stage('UNIT TEST'){
+        stage('Maven Build') {
+            steps {
+                sh 'mvn clean package -DskipTests=false'
+            }
+        }
+
+        stage('Unit Test') {
             steps {
                 sh 'mvn test'
             }
         }
 
-	stage('INTEGRATION TEST'){
+        stage('SonarQube Analysis') {
             steps {
-                sh 'mvn verify -DskipUnitTests'
-            }
-        }
-		
-        stage ('CODE ANALYSIS WITH CHECKSTYLE'){
-            steps {
-                sh 'mvn checkstyle:checkstyle'
-            }
-            post {
-                success {
-                    echo 'Generated Analysis Result'
+
+                withSonarQubeEnv('sonarqube') {
+
+                    sh '''
+                        mvn sonar:sonar \
+                        -Dsonar.projectKey=my-java-app \
+                        -Dsonar.projectName=my-java-app
+                    '''
                 }
             }
         }
 
-        stage('CODE ANALYSIS with SONARQUBE') {
-          
-		  environment {
-             scannerHome = tool 'sonarscanner4'
-          }
-
-          steps {
-            withSonarQubeEnv('sonar-pro') {
-               sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
-                   -Dsonar.projectName=vprofile-repo \
-                   -Dsonar.projectVersion=1.0 \
-                   -Dsonar.sources=src/ \
-                   -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
-                   -Dsonar.junit.reportsPath=target/surefire-reports/ \
-                   -Dsonar.jacoco.reportsPath=target/jacoco.exec \
-                   -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml'''
-            }
-
-            timeout(time: 10, unit: 'MINUTES') {
-               waitForQualityGate abortPipeline: true
-            }
-          }
-        }
-
-        stage("Publish to Nexus Repository Manager") {
+        stage('Quality Gate') {
             steps {
-                script {
-                    pom = readMavenPom file: "pom.xml";
-                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
-                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
-                    artifactPath = filesByGlob[0].path;
-                    artifactExists = fileExists artifactPath;
-                    if(artifactExists) {
-                        echo "*** File: ${artifactPath}, group: ${pom.groupId}, packaging: ${pom.packaging}, version ${pom.version} ARTVERSION";
-                        nexusArtifactUploader(
-                            nexusVersion: NEXUS_VERSION,
-                            protocol: NEXUS_PROTOCOL,
-                            nexusUrl: NEXUS_URL,
-                            groupId: pom.groupId,
-                            version: ARTVERSION,
-                            repository: NEXUS_REPOSITORY,
-                            credentialsId: NEXUS_CREDENTIAL_ID,
-                            artifacts: [
-                                [artifactId: pom.artifactId,
-                                classifier: '',
-                                file: artifactPath,
-                                type: pom.packaging],
-                                [artifactId: pom.artifactId,
-                                classifier: '',
-                                file: "pom.xml",
-                                type: "pom"]
-                            ]
-                        );
-                    } 
-		    else {
-                        error "*** File: ${artifactPath}, could not be found";
-                    }
+
+                timeout(time: 5, unit: 'MINUTES') {
+
+                    waitForQualityGate abortPipeline: true
+
                 }
             }
         }
 
+        stage('Docker Build') {
+            steps {
 
+                sh '''
+                    docker build \
+                    -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
+                    -t ${DOCKER_IMAGE}:latest .
+                '''
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+
+                sh '''
+                    echo "$DOCKER_CREDS_PSW" | \
+                    docker login \
+                    -u "$DOCKER_CREDS_USR" \
+                    --password-stdin
+                '''
+            }
+        }
+
+        stage('Docker Push') {
+            steps {
+
+                sh '''
+                    docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    docker push ${DOCKER_IMAGE}:latest
+                '''
+            }
+        }
+
+        stage('Deploy to EC2') {
+
+            steps {
+
+                sshagent(credentials: ['deployment-ssh']) {
+
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no \
+                        ec2-user@172.31.43.96 \
+                        "
+                        docker pull ${DOCKER_IMAGE}:latest &&
+                        docker stop myapp || true &&
+                        docker rm myapp || true &&
+                        docker run -d \
+                            --name myapp \
+                            -p 8081:8080 \
+                            ${DOCKER_IMAGE}:latest
+                        "
+                    '''
+                }
+            }
+        }
     }
 
+    post {
 
+        success {
+            echo 'CI/CD pipeline completed successfully.'
+        }
+
+        failure {
+            echo 'CI/CD pipeline failed.'
+        }
+    }
 }
